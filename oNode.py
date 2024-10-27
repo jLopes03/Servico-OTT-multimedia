@@ -10,12 +10,12 @@ def receive(s):
 def send(s):
     while True:
         addr = input("Where to send?\n")
-        s.sendto(pickle.dumps("Boas"),(addr,31415))
+        s.sendto(pickle.dumps("Boas"), (addr, 31415))
 
 def main():
-    s = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     addr = input("Node IP\n")
-    s.bind((addr,31415))
+    s.bind((addr, 31415))
 
     threading.Thread(target=receive, args=(s,)).start()
 
