@@ -1,5 +1,6 @@
 import cv2
 import time
+import base64
 
 video = cv2.VideoCapture("Videos/VideoA.mp4")
 fps = video.get(cv2.CAP_PROP_FPS)
@@ -16,6 +17,8 @@ while True:
             break
 
         _, buffer = cv2.imencode(".jpg", frame)
+        encoded_64 = base64.b64encode(buffer)
+        # send(encoded_64)
 
         ######
         # Zona para dar send do buffer. 
