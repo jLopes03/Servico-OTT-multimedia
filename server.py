@@ -2,9 +2,15 @@ import socket
 import threading
 import pickle
 import json
-
+import queue
+import os
 
 from RTPPacket import RTPPacket
+
+UDP_PORT = 9090
+
+clientsQueue = queue.Queue()
+#nodeQueue?
 
 #ex: O1 : ipO1, neighboursO1, isPP
 def discoverOverlay():
@@ -34,12 +40,32 @@ def discoverOverlay():
 
     return nodeDict
 
+def discoverVideos():
+    return os.listdir("Videos")
 
 def receivePackets(udpSocket):
     while True:
         data, addr = udpSocket.recvfrom(1024) #??
+        loadedData = pickle.loads(data)
+        # eventualmente algo para diferenciar de cliente para morte de node
+        clientsQueue.put((loadedData, addr))
+
+
+def handleClients(udpSocket,videoList):
+    clientPacket, clientAddr = clientsQueue.get(True) # bloqueia até ter um pacote
+
+    if clientPacket == "VL": #Video List
+        udpSocket.sendto(pickle.dumps(videoList),clientAddr)    
+
 
 def main():
+    nodeDict = discoverOverlay()
+    videoList = discoverVideos()
     udpSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    udpSocket.bind((nodeDict["O1"][0],UDP_PORT))
 
-print(discoverOverlay())
+    threading.Thread(target=receivePackets, args=(udpSocket,)).start()
+    threading.Thread(target=handleClients,args=(udpSocket,videoList,)).start()
+
+
+main()
