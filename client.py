@@ -15,11 +15,26 @@ def receivePackets(udpSocket):
     while True:
         data, addr = udpSocket.recvfrom(1024) #??
         loadedData = pickle.loads(data)
-        if loadedData.isinstance(RTPPacket):
+        if isinstance(loadedData,RTPPacket):
             rtpQueue.put(loadedData)
         else:
             controlQueue.put(loadedData)
 
+
+
+def watchStream(udpSocket):
+    while True:
+        videoName = input("What to watch?\n")
+    
+        receivedPP = False
+        while not receivedPP:
+            try:
+                if (node := controlQueue.get(True,0.10)):
+                    #ver transmissão
+                    print(node)
+                    receivedPP = True
+            except queue.Empty:
+                udpSocket.sendto(pickle.dumps(f"W : {videoName}"),(SERVER_IP,UDP_PORT)) 
 
 def main():
     #clientIp = input("My IP?\n")
@@ -40,5 +55,7 @@ def main():
     #pode acontecer de receber ter a list novamente na queue porque o servidor recebeu pacotes mesmo depois de enviar a resposta que o cliente recebeu mais tarde, provavelmente será para ignorar com base em headers
 
     print(videoList)
+
+    watchStream(udpSocket)
 
 main()
