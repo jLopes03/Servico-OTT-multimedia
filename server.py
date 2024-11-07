@@ -13,33 +13,16 @@ UDP_PORT = 9090
 clientsQueue = queue.Queue()
 nodeQueue = queue.Queue()
 
-#ex: O1 : ipO1, neighboursO1, isPP
-def discoverOverlay():
-    # Load the JSON file
+
+def loadOverlay():
+    nodeTree = {}
     with open("overlay.json", "r") as jsonFile:
-        parsedJson = json.load(jsonFile)
+        data = json.load(jsonFile)
 
-    # Extract data from JSON
-    nodes = parsedJson["nodes"]
-    neighbours = parsedJson["neighbours"]
-    pPresence = parsedJson["pPresence"]
+    for node in data["nodes"]:
+        nodeTree[node["id"]] = (node["ip"], node["neighbours"], node["pp"])
 
-    # Create a dictionary of node names to IP addresses
-    node_ips = {node_name: ip for node in nodes for node_name, ip in node.items()}
-
-    # Dictionary to hold the structured information for each node
-    nodeDict = {}
-
-    # Populate nodeDict with a tuple (ip, [neighbours], isPP) for each node
-    for node_name, ip in node_ips.items():
-        # Get the neighbors and pPresence status for the node
-        node_neighbours = neighbours.get(node_name, [])
-        is_pp = node_name in pPresence
-
-        # Store in nodeDict as a tuple (ip, [neighbours], is_pp)
-        nodeDict[node_name] = (ip, node_neighbours, is_pp)
-
-    return nodeDict
+    return data["server"], nodeTree
 
 def discoverVideos():
     return os.listdir("Videos")
@@ -67,16 +50,15 @@ def handleClients(udpSocket,videoList):
                 udpSocket.sendto(pickle.dumps(f"Stream doesn't exist."),clientAddr)
 
 def main():
-    nodeDict = discoverOverlay()
+    serverId, nodeTree = loadOverlay() # id -> (ip, [neighbours], is_pp)
     videoList = discoverVideos()
     udpSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    udpSocket.bind((nodeDict["O1"][0],UDP_PORT))
+    udpSocket.bind((nodeTree[serverId][0], UDP_PORT))
 
     #servidor tem conexão tcp com os nodos overlay ligados a ele, manda controlPacket pela rede overlay para obter métricas para os pontos de presença, os pontos de presença comunicam com o cliente e obtêm métricas que enviam para o servidor
     #o servidor junta as duas e escolhe o melhor ponto de presença para transmitir para o cliente
 
     threading.Thread(target=receivePackets, args=(udpSocket,)).start()
     handleClients(udpSocket,videoList)
-
 
 main()
