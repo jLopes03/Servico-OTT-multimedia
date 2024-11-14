@@ -1,4 +1,4 @@
-class controlPacket:
+class controlProtocol:
     
     def __init__(self, type,srcAddr, destAddr, payload):
         self.type = type

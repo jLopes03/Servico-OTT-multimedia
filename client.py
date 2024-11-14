@@ -3,7 +3,8 @@ import pickle
 import queue
 import threading
 
-from RTPPacket import RTPPacket
+from RTPProtocol import RTPProtocol
+from requestProtocol import requestProtocol
 
 UDP_PORT = 9090
 SERVER_IP = "10.0.0.10"
@@ -15,11 +16,10 @@ def receivePackets(udpSocket):
     while True:
         data, addr = udpSocket.recvfrom(1024) #??
         loadedData = pickle.loads(data)
-        if isinstance(loadedData,RTPPacket):
+        if isinstance(loadedData,RTPProtocol):
             rtpQueue.put(loadedData)
-        else:
+        elif isinstance(loadedData,requestProtocol):
             controlQueue.put(loadedData)
-
 
 
 def watchStream(udpSocket):
@@ -34,7 +34,8 @@ def watchStream(udpSocket):
                     print(node)
                     receivedPP = True
             except queue.Empty:
-                udpSocket.sendto(pickle.dumps(f"W : {videoName}"),(SERVER_IP,UDP_PORT)) 
+                watchRequest = requestProtocol("Client",f"W : {videoName}")
+                udpSocket.sendto(pickle.dumps(watchRequest),(SERVER_IP,UDP_PORT)) 
 
 def main():
     #clientIp = input("My IP?\n")
@@ -44,17 +45,19 @@ def main():
 
     # VL -> Video List || W : title -> Watch
     receivedVideoList = False
-    udpSocket.sendto(pickle.dumps("VL"),(SERVER_IP,UDP_PORT))
+    
+    listRequest = requestProtocol("Client","VL")
+    udpSocket.sendto(pickle.dumps(listRequest),(SERVER_IP,UDP_PORT))
     while not receivedVideoList:
         try:
             if (videoList := controlQueue.get(True,0.10)): #aranjar um timeout
+                print(videoList.getPayload())
                 receivedVideoList = True
         except queue.Empty:
-            udpSocket.sendto(pickle.dumps("VL"),(SERVER_IP,UDP_PORT))
+            listRequest = requestProtocol("Client","VL")
+            udpSocket.sendto(pickle.dumps(listRequest),(SERVER_IP,UDP_PORT))
     
     #pode acontecer de receber ter a list novamente na queue porque o servidor recebeu pacotes mesmo depois de enviar a resposta que o cliente recebeu mais tarde, provavelmente será para ignorar com base em headers
-
-    print(videoList)
 
     watchStream(udpSocket)
 
