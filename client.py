@@ -2,8 +2,9 @@ import socket
 import pickle
 import queue
 import threading
+import ffmpeg
 
-from RTPProtocol import RTPProtocol
+from videoProtocol import RTPProtocol
 from requestProtocol import requestProtocol
 
 UDP_PORT = 9090
@@ -22,7 +23,10 @@ def receivePackets(udpSocket):
             controlQueue.put(loadedData)
 
 
-def watchStream(udpSocket):
+def viewStream(udpSocket,node):
+    pass
+
+def watchStreams(udpSocket):
     while True:
         videoName = input("What to watch?\n")
     
@@ -30,8 +34,7 @@ def watchStream(udpSocket):
         while not receivedPP:
             try:
                 if (node := controlQueue.get(True,0.10)):
-                    #ver transmissão
-                    print(node)
+                    viewStream(udpSocket,node)
                     receivedPP = True
             except queue.Empty:
                 watchRequest = requestProtocol("Client",f"W : {videoName}")
@@ -59,6 +62,6 @@ def main():
     
     #pode acontecer de receber ter a list novamente na queue porque o servidor recebeu pacotes mesmo depois de enviar a resposta que o cliente recebeu mais tarde, provavelmente será para ignorar com base em headers
 
-    watchStream(udpSocket)
+    watchStreams(udpSocket)
 
 main()

@@ -3,7 +3,7 @@ import threading
 import pickle
 import queue
 
-from RTPProtocol import RTPProtocol
+from videoProtocol import videoProtocol
 from controlProtocol import controlProtocol
 from requestProtocol import requestProtocol
 
@@ -35,20 +35,20 @@ def main():
     addr = input("Node IP\n")
     udpSocket.bind((addr,UDP_PORT))
 
+    threading.Thread(target=receivePacketsUdp,args=(udpSocket,)).start()
+
     receivedNeighbours = False
 
-    neighboursRequest = requestProtocol("Node","Neighbours")
+    neighboursRequest = requestProtocol("Node","Neighbours",(addr,UDP_PORT))
     udpSocket.sendto(pickle.dumps(neighboursRequest),(SERVER_IP,UDP_PORT))
     while not receivedNeighbours:
         try:
-            if (neighbours := serverQueue.get(True,0.10)):
-                receivedNeighbours = False
+            if (neighbours := serverQueue.get(True,0.10).getPayload()):
+                receivedNeighbours = True
         
         except queue.Empty:
-            neighboursRequest = requestProtocol("Node","Neighbours")
+            neighboursRequest = requestProtocol("Node","Neighbours",(addr,UDP_PORT))
             udpSocket.sendto(pickle.dumps(neighboursRequest),(SERVER_IP,UDP_PORT))
-
-    threading.Thread(target=receivePacketsUdp,args=(udpSocket,)).start()
 
     print(neighbours)
 

@@ -1,4 +1,4 @@
-class RTPProtocol:
+class videoProtocol:
 
     def __init__(self, srcAddr, destAddr, videoPath, seqNumber,payload):
         self.srcAddr = srcAddr
