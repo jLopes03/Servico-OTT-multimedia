@@ -6,8 +6,8 @@ import queue
 import os
 import re
 import ffmpeg
-import subprocess
 import shutil
+import time
 
 from videoProtocol import videoProtocol
 from requestProtocol import requestProtocol
@@ -15,11 +15,12 @@ from requestProtocol import requestProtocol
 UDP_PORT = 9090
 SERVER_IP = "10.0.0.10"
 
+CHUNK_SIZE = 940 # 188 * 5, MTU UDP -> 1500
+
 clientsQueue = queue.Queue()
 nodeQueueUdp = queue.Queue()
 
-sendingVideo = {} # (videoName, overlayNode it's being sent to) -> subprocess sending the video
-splitVideos = {} # (videoName) -> frames of the video
+sendingVideo = {} 
 
 def loadOverlay():
     nodeTree = {}
@@ -31,20 +32,21 @@ def loadOverlay():
 
     return nodeTree
 
-def discoverVideos():
-    os.makedirs("mpgetsVideos")
-    return os.listdir("Videos")
-
-def splitVideo(videoName):
-    if videoName in splitVideos.keys():
-        return
-
-    ffmpeg.input(f"Videos/{videoName}").output(f"mpegtsVideos/{videoName}.ts",f="mpegts",vcodec="libx264",acodec="aac",preset="superfast").run(stderr=open('logfile.txt', 'w'))
+def convertToMpegts(videoName):
+    ffmpeg.input(f"Videos/{videoName}").output(f"mpegtsVideos/{videoName}.ts",f="mpegts",vcodec="libx264",acodec="aac",preset="superfast",loglevel="quiet").run()
     # ffmpeg -i VideoA.mp4 -f mpegts -c:v libx264 -preset superfast -c:a aac output.ts
 
+def discoverSplitVideos():
+    os.makedirs("mpegtsVideos")
+
+    for videoName in os.listdir("Videos"):
+        threading.Thread(target=convertToMpegts,args=(videoName,)).start()
+
+    return os.listdir("Videos")
+   
 def receivePacketsUdp(udpSocket):
     while True:
-        data, addr = udpSocket.recvfrom(1024) #??
+        data, addr = udpSocket.recvfrom(1500) # MTU UPD
         loadedData = pickle.loads(data)
         
         if loadedData.getOrigin() == "Client":
@@ -52,19 +54,33 @@ def receivePacketsUdp(udpSocket):
         elif loadedData.getOrigin() == "Node":
             nodeQueueUdp.put((loadedData,addr))
 
+def calculateDelay(videoName):
+    
+    probe = ffmpeg.probe(f"mpegtsVideos/{videoName}.ts", v='error', show_entries='format=bit_rate')
 
-def sendVideo(udpSocket, videoName):
-    with open(f"mpegtsVideos/{videoName}.ts","rb") as tsVideo:
+    totalBitrate = int(probe['format'].get('bit_rate'))
+
+    totalByteRate = totalBitrate/8
+
+    return CHUNK_SIZE/totalByteRate
+
+
+def sendVideo(udpSocket, videoName, clientAddr, delay):
+
+    with open(f"mpegtsVideos/{videoName}.ts","rb") as tsFile:
         
-        fileSize = os.fstat(tsVideo).st_size
+        while True:
+            startTime = time.time()
 
-        while sendingVideo[videoName] and (videoChunk := tsVideo.read(188)): # enquanto a lista tem algum endereço
-            
-            videoChunk = tsVideo.read(188) # mpeg-ts uses 188 byte packets
+            if not (videoChunk := tsFile.read(CHUNK_SIZE)):
+                break
 
-            for addr in sendingVideo[videoName]:
-                chunkPacket = videoProtocol((SERVER_IP,UDP_PORT),addr,[],0,videoChunk)
-                udpSocket.sendto(pickle.dumps(chunkPacket),addr)
+            videoPacket = videoProtocol((SERVER_IP,UDP_PORT),clientAddr,[],0,videoChunk)
+            udpSocket.sendto(pickle.dumps(videoPacket),clientAddr)
+
+            elapsedTime = time.time() - startTime
+            time.sleep(max(0,delay - elapsedTime))
+
 
 def handleClients(udpSocket,videoList):
     try:
@@ -81,34 +97,36 @@ def handleClients(udpSocket,videoList):
                 if videoName in videoList:
                     # calcular rota e transmitir video numa nova thread
 
-                    splitVideo(videoName)
+                    # clientAddr -> [videoName] (uma thread por node a quem está a enviar)
+                    # provavelmente será necessário uma lista de rotas para alem do nome do video caso o nodo à frente tenha de fazer multicast, fica pesado na rede
 
-                    sendingVideo[(f"{videoName}")] = [clientAddr]
+                    # pensar tambem em mandar o caminho ao ponto de presença e ter o ponto de presença a fazer backtrack por esse caminho
 
-                    ## 
+                    delay = calculateDelay(videoName)
 
-                    nodeLocation = requestProtocol("Server",f"Recebi o pedido da stream {videoName}")
+                    nodeLocation = requestProtocol("Server",f"{delay}")
                     udpSocket.sendto(pickle.dumps(nodeLocation),clientAddr)
+
+                    threading.Thread(target=sendVideo, args=(udpSocket,videoName,clientAddr,delay,)).start()
+
                 else:
                     errorMessage = requestProtocol("Server","Stream doesn't exist.")
                     udpSocket.sendto(pickle.dumps(errorMessage),clientAddr)
     finally:
-        shutil.rmtree("fragmentedVideos")
+        shutil.rmtree("mpegtsVideos")
 
 def registerNodes(udpSocket,nodeTree):
     while True:
         nodePacket, _ = nodeQueueUdp.get(True)
 
-        if nodePacket.getPayload() == "Neighbours":   
-
-
+        if nodePacket.getPayload() == "Neighbours":
 
             neighbourList = requestProtocol("Server",nodeTree[nodePacket.getSrcAddr()[0]][1]) #nodeTree[nodeIp][1] -> neightbours de nodeIp 
             udpSocket.sendto(pickle.dumps(neighbourList),nodePacket.getSrcAddr())
 
 def main():
     nodeTree = loadOverlay() # ip -> (id, [neighbours], is_pp)
-    videoList = discoverVideos()
+    videoList = discoverSplitVideos()
     udpSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     udpSocket.bind((SERVER_IP, UDP_PORT))
 

@@ -10,7 +10,7 @@ from requestProtocol import requestProtocol
 UDP_PORT = 9090
 SERVER_IP = "10.0.0.10"
 
-rtpQueue = queue.Queue()
+videoQueue = queue.Queue()
 controlQueue = queue.Queue() 
 serverQueue = queue.Queue() # deve apenas ser usada uma vez, mas preferi deixar
 
@@ -18,11 +18,11 @@ neighbours = {}
 
 def receivePacketsUdp(udpSocket):
     while True:
-        data, addr = udpSocket.recvfrom(1024) #??
+        data, addr = udpSocket.recvfrom(1500) # MTU UPD
         loadedData = pickle.loads(data)
 
-        if isinstance(loadedData,RTPProtocol):
-            rtpQueue.put(loadedData)
+        if isinstance(loadedData,videoProtocol):
+            videoQueue.put(loadedData)
         elif isinstance(loadedData,controlProtocol):
             controlQueue.put(loadedData) 
         elif isinstance(loadedData,requestProtocol):
