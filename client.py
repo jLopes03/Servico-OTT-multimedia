@@ -27,17 +27,16 @@ def receivePackets(udpSocket):
 
 
 def viewStream():
-    
-    ffplayProcess = subprocess.Popen(
-        ["ffplay","-f","mpegts","-"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-
     # lidar com fechar isto graciosamente
 
     try:
+
+        ffplayProcess = subprocess.Popen(
+            ["ffplay","-f","mpegts","-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
 
         while (videoQueue.qsize() < 200): # 200 pacotes aprox -> 1000 segmentos de video de 188 bytes
             time.sleep(0.01)
@@ -50,27 +49,27 @@ def viewStream():
             ffplayProcess.stdin.write(videoChunk)
             ffplayProcess.stdin.flush()
 
+    except KeyboardInterrupt:
+
+        print("A terminar a stream...")
+
     finally:
         if ffplayProcess.stdin:
             try:
                 ffplayProcess.stdin.close()
-            except Exception as close_error:
-                print(f"Error closing stdin: {close_error}")
+            except Exception as closeError:
+                print(f"Error closing stdin: {closeError}")
 
         if ffplayProcess.poll() is None:  # Check if process is still running
             try:
                 ffplayProcess.terminate()
-            except Exception as terminate_error:
-                print(f"Error terminating ffplay process: {terminate_error}")
-
-        while not videoQueue.empty():              
-            videoQueue.get()
-
+            except Exception as terminateError:
+                print(f"Error terminating ffplay process: {terminateError}")
 
 
 def watchStreams(udpSocket):
     while True:
-        videoName = input("\nWhat to watch?\n")
+        videoName = input("\nVer o quê?\n")
     
         receivedPP = False
         while not receivedPP:
@@ -103,8 +102,6 @@ def main():
         except queue.Empty:
             listRequest = requestProtocol("Client","VL")
             udpSocket.sendto(pickle.dumps(listRequest),(SERVER_IP,UDP_PORT))
-    
-    #pode acontecer de receber ter a list novamente na queue porque o servidor recebeu pacotes mesmo depois de enviar a resposta que o cliente recebeu mais tarde, provavelmente será para ignorar com base em headers
 
     watchStreams(udpSocket)
 

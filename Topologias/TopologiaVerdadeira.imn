@@ -58,6 +58,10 @@ node n3 {
     network-config {
 	hostname n3
 	!
+	interface eth4
+	 ip address 10.0.27.2/24
+	 ipv6 address 2001:27::2/64
+	!
 	interface eth3
 	 ip address 10.0.11.2/24
 	 ipv6 address 2001:11::2/64
@@ -82,6 +86,7 @@ node n3 {
     interface-peer {eth1 n2}
     interface-peer {eth2 n5}
     interface-peer {eth3 n8}
+    interface-peer {eth4 n22}
 }
 
 node n4 {
@@ -213,6 +218,10 @@ node n8 {
     network-config {
 	hostname n8
 	!
+	interface eth4
+	 ip address 10.0.28.2/24
+	 ipv6 address 2001:28::2/64
+	!
 	interface eth3
 	 ip address 10.0.13.1/24
 	 ipv6 address 2001:13::1/64
@@ -237,6 +246,7 @@ node n8 {
     interface-peer {eth1 n3}
     interface-peer {eth2 n10}
     interface-peer {eth3 n11}
+    interface-peer {eth4 n22}
 }
 
 node n9 {
@@ -304,6 +314,10 @@ node n11 {
     network-config {
 	hostname n11
 	!
+	interface eth2
+	 ip address 10.0.29.2/24
+	 ipv6 address 2001:29::2/64
+	!
 	interface eth1
 	 ip address 10.0.26.1/24
 	 ipv6 address 2001:26::1/64
@@ -318,6 +332,7 @@ node n11 {
     labelcoords {850.0 782.0}
     interface-peer {eth0 n8}
     interface-peer {eth1 n13}
+    interface-peer {eth2 n22}
 }
 
 node n12 {
@@ -534,6 +549,33 @@ node n21 {
     interface-peer {eth0 n17}
 }
 
+node n22 {
+    type router
+    model router
+    network-config {
+	hostname n22
+	!
+	interface eth2
+	 ip address 10.0.29.1/24
+	 ipv6 address 2001:29::1/64
+	!
+	interface eth1
+	 ip address 10.0.28.1/24
+	 ipv6 address 2001:28::1/64
+	!
+	interface eth0
+	 ip address 10.0.27.1/24
+	 ipv6 address 2001:27::1/64
+	!
+    }
+    canvas c1
+    iconcoords {1109.0 756.0}
+    labelcoords {1109.0 788.0}
+    interface-peer {eth0 n3}
+    interface-peer {eth1 n8}
+    interface-peer {eth2 n11}
+}
+
 link l1 {
     nodes {n1 n3}
     bandwidth 0
@@ -689,13 +731,28 @@ link l31 {
     bandwidth 0
 }
 
+link l32 {
+    nodes {n22 n3}
+    bandwidth 0
+}
+
+link l33 {
+    nodes {n22 n8}
+    bandwidth 0
+}
+
+link l34 {
+    nodes {n22 n11}
+    bandwidth 0
+}
+
 annotation a1 {
     iconcoords {727.0 50.0 1625.0 834.0}
     type rectangle
     label {CDN}
     labelcolor black
     fontfamily {Arial}
-    fontsize 12
+    fontsize {12}
     color #ffff89
     width 0
     border black
@@ -725,3 +782,4 @@ option global {
 
 option session {
 }
+

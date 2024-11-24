@@ -8,10 +8,13 @@ import re
 import ffmpeg
 import shutil
 import time
+import struct
+from collections import deque
 
 from videoProtocol import videoProtocol
 from requestProtocol import requestProtocol
 
+TCP_PORT = 9595
 UDP_PORT = 9090
 SERVER_IP = "10.0.0.10"
 
@@ -19,6 +22,12 @@ CHUNK_SIZE = 940 # 188 * 5, MTU UDP -> 1500
 
 clientsQueue = queue.Queue()
 nodeQueueUdp = queue.Queue()
+
+tcpSockets = {}
+
+tcpSocketLock = threading.Lock()
+
+readyNodes = deque()
 
 sendingVideo = {} 
 
@@ -28,7 +37,7 @@ def loadOverlay():
         data = json.load(jsonFile)
 
     for node in data["nodes"]:
-        nodeTree[node["ip"]] = (node["id"], node["neighbours"], node["pp"])
+        nodeTree[node["ip"]] = (node["id"], node["neighbours"], node["pp"],node["wayBack"])
 
     return nodeTree
 
@@ -83,58 +92,127 @@ def sendVideo(udpSocket, videoName, clientAddr, delay):
 
 
 def handleClients(udpSocket,videoList):
+    while True:
+    
+        clientPacket, clientAddr = clientsQueue.get(True) # bloqueia até ter um pacote
+    
+        if clientPacket.getPayload() == "VL": #Video List
+    
+            listResponse = requestProtocol("Server",videoList)
+            udpSocket.sendto(pickle.dumps(listResponse),clientAddr)
+    
+        elif (match := re.match(r"W : (.*)",clientPacket.getPayload())):
+    
+            videoName = match.group(1)
+    
+            if videoName in videoList:
+  
+                # calcular rota e transmitir video numa nova thread
+                # clientAddr -> [videoName] (uma thread por node a quem está a enviar)
+                # provavelmente será necessário uma lista de rotas para alem do nome do video caso o nodo à frente tenha de fazer multicast, fica pesado na rede
+                # pensar tambem em mandar o caminho ao ponto de presença e ter o ponto de presença a fazer backtrack por esse caminho
+    
+                delay = calculateDelay(videoName)
+                nodeLocation = requestProtocol("Server",f"{delay}")
+                udpSocket.sendto(pickle.dumps(nodeLocation),clientAddr)
+                threading.Thread(target=sendVideo, args=(udpSocket,videoName,clientAddr,delay,)).start()
+    
+            else:
+    
+                errorMessage = requestProtocol("Server","Stream doesn't exist.")
+                udpSocket.sendto(pickle.dumps(errorMessage),clientAddr)
+
+
+def sendNeighbours(udpSocket, nodeTree, ip):
+
+    neighbours = nodeTree[ip][1] # nodeTree[nodeIp][1] -> neightbours de nodeIp 
+    wayBackN = nodeTree[ip][3] # quantas conexões tcp aceitar (as que aceita são o caminho até ao servidor)
+    isPP = nodeTree[ip][2]
+
+    while True:
+
+        neighbourList = requestProtocol("Server",(neighbours,wayBackN,isPP)) 
+        udpSocket.sendto(pickle.dumps(neighbourList),(ip,UDP_PORT))
+
+        try:
+            respPacket, addr = nodeQueueUdp.get(True,1)
+            if respPacket.getPayload() == "ACK" and addr[0] == ip:
+                finalAck = requestProtocol("Server","ACK")
+                udpSocket.sendto(pickle.dumps(finalAck),(ip,UDP_PORT))
+                break
+
+        except queue.Empty:
+            pass
+        
+def registerNodes(udpSocket,nodeTree):
+    
+    nodesIps = list(nodeTree.keys())
+    nodesIps.remove(SERVER_IP)
+
+    for ip in nodesIps:
+        sendNeighbours(udpSocket,nodeTree,ip)
+        
+
+def handleNeighbours(tcpSocket,neighbourAddr):
+
     try:
         while True:
-            clientPacket, clientAddr = clientsQueue.get(True) # bloqueia até ter um pacote
+            lenData = b''
+            while len(lenData) < 4:
+                lenData += tcpSocket.recv(4 - len(lenData))
+            length = struct.unpack("!I",lenData)[0]
 
-            if clientPacket.getPayload() == "VL": #Video List
-                listResponse = requestProtocol("Server",videoList)
-                udpSocket.sendto(pickle.dumps(listResponse),clientAddr)
+            #print(f"Reading {length}")
+            
+            data = b''
+            while len(data) < length:
+                data += tcpSocket.recv(length - len(data))
+            loadedPacket = pickle.loads(data)
+            
+            if loadedPacket.getType() == "CONNECTED":
 
-            elif (match := re.match(r"W : (.*)",clientPacket.getPayload())):
-                videoName = match.group(1)
+                connectedList = loadedPacket.getPayload()
 
-                if videoName in videoList:
-                    # calcular rota e transmitir video numa nova thread
+                #print(f"\n{connectedList}\n")
+                
+                for elem in connectedList:
+                    readyNodes.append(elem)
 
-                    # clientAddr -> [videoName] (uma thread por node a quem está a enviar)
-                    # provavelmente será necessário uma lista de rotas para alem do nome do video caso o nodo à frente tenha de fazer multicast, fica pesado na rede
-
-                    # pensar tambem em mandar o caminho ao ponto de presença e ter o ponto de presença a fazer backtrack por esse caminho
-
-                    delay = calculateDelay(videoName)
-
-                    nodeLocation = requestProtocol("Server",f"{delay}")
-                    udpSocket.sendto(pickle.dumps(nodeLocation),clientAddr)
-
-                    threading.Thread(target=sendVideo, args=(udpSocket,videoName,clientAddr,delay,)).start()
-
-                else:
-                    errorMessage = requestProtocol("Server","Stream doesn't exist.")
-                    udpSocket.sendto(pickle.dumps(errorMessage),clientAddr)
+            else:
+                print(f"Na thread responsável por {neighbourAddr} ----> {loadedPacket.getPayload()}") # se algum nodo overlay morrer de momento, os conectados também morrem
+    
     finally:
-        shutil.rmtree("mpegtsVideos")
-
-def registerNodes(udpSocket,nodeTree):
-    while True:
-        nodePacket, _ = nodeQueueUdp.get(True)
-
-        if nodePacket.getPayload() == "Neighbours":
-
-            neighbourList = requestProtocol("Server",nodeTree[nodePacket.getSrcAddr()[0]][1]) #nodeTree[nodeIp][1] -> neightbours de nodeIp 
-            udpSocket.sendto(pickle.dumps(neighbourList),nodePacket.getSrcAddr())
+        tcpSocket.close()
 
 def main():
-    nodeTree = loadOverlay() # ip -> (id, [neighbours], is_pp)
-    videoList = discoverSplitVideos()
-    udpSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    udpSocket.bind((SERVER_IP, UDP_PORT))
+    try:
+        nodeTree = loadOverlay() # ip -> (id, [neighbours], is_pp, wayBack)
+        videoList = discoverSplitVideos()
+        udpSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        udpSocket.bind((SERVER_IP, UDP_PORT))
 
-    #servidor tem conexão tcp com os nodos overlay ligados a ele, manda controlPacket pela rede overlay para obter métricas para os pontos de presença, os pontos de presença comunicam com o cliente e obtêm métricas que enviam para o servidor
-    #o servidor junta as duas e escolhe o melhor ponto de presença para transmitir para o cliente
+        threading.Thread(target=receivePacketsUdp, args=(udpSocket,)).start()
 
-    threading.Thread(target=receivePacketsUdp, args=(udpSocket,)).start()
-    threading.Thread(target=registerNodes, args=(udpSocket,nodeTree,)).start()
-    handleClients(udpSocket,videoList)
+        registerNodes(udpSocket,nodeTree)
+
+        for ip in nodeTree[SERVER_IP][1]:
+            tcpSockets[ip] = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+            tcpSockets[ip].connect((ip,TCP_PORT))
+
+            tcpSockets[ip].send(pickle.dumps(f"{SERVER_IP}"))
+
+        for addr, sock in tcpSockets.items():
+            threading.Thread(target=handleNeighbours, args=(sock,addr)).start()
+
+        while True:
+            if all(key in readyNodes for key in nodeTree.keys() if key != SERVER_IP):
+                print(f"Rede pronta! ---> {readyNodes}")
+                handleClients(udpSocket,videoList)
+                break
+            time.sleep(0.5) # poupar CPU
+
+    finally:
+        if os.path.exists("mpegtsVideos"):
+            shutil.rmtree("mpegtsVideos")
 
 main()

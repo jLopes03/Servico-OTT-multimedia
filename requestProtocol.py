@@ -1,6 +1,6 @@
 class requestProtocol:
 
-    def __init__(self,origin,payload,srcAddr = ""):
+    def __init__(self,origin,payload,srcAddr=""):
         self.origin = origin # client, server, node
         self.srcAddr = srcAddr
         self.payload = payload
