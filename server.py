@@ -29,6 +29,7 @@ tcpHandlers = {}
 
 metrics = {} # (origem, dest) -> N segundos
 networkxGraph = networkx.Graph()
+bestPathsPP = {}
 
 statusUpdates = 0
 statusLock = threading.Lock()
@@ -233,9 +234,17 @@ def networkTest(nodeTree): # pra já apenas RTT
         print(f"RTT de {rtt} segundos no link de {src} a {dest}.")
 
     weightedEdges = [(u, v, w) for (u, v), w in metrics.items()]
-    networkxGraph.add_weighted_edges_from(weightedEdges)
+    networkxGraph.add_weighted_edges_from(weightedEdges,"quality")
     
-    
+
+def bestPathToPPs(nodeTree):
+    for ip, (_,_,isPP,_) in nodeTree.items():
+        if isPP:
+            shortestPath = networkx.shortest_path(networkxGraph,SERVER_IP,ip,"quality")
+            bestPathsPP[ip] = shortestPath
+
+    for addr, path in bestPathsPP.items():
+        print(f"Caminho mais curto para {addr} -> {path}")
 
 def main():
     try:
@@ -264,7 +273,7 @@ def main():
             if all(key in readyNodes for key in nodeTree.keys() if key != SERVER_IP):
                 networkTest(nodeTree)
 
-                #bestPathToPPs(nodeTree)
+                bestPathToPPs(nodeTree)
 
                 handleClients(udpSocket,videoList)
 
