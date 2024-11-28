@@ -9,6 +9,7 @@ import ffmpeg
 import shutil
 import time
 import networkx
+
 from collections import deque
 
 from videoProtocol import videoProtocol
@@ -29,14 +30,18 @@ tcpHandlers = {}
 
 metrics = {} # (origem, dest) -> N segundos
 networkxGraph = networkx.Graph()
-bestPathsPP = {}
+bestPathsPP = {} # ip -> (path,rtt)
+clientPings = {} # client ip -> [(ppIp,rtt)]
+
+clientAddrs = {} # clientIP -> (clientIP,Port)
+
+streamsSending = {} # videoName -> [path (com o ip do cliente)]
+streamsSendingLocks = {} # videoName -> Lock
 
 statusUpdates = 0
 statusLock = threading.Lock()
 
 readyNodes = deque()
-
-sendingVideo = {} 
 
 def countEdges(graph_dict):
     """
@@ -81,6 +86,7 @@ def discoverSplitVideos():
     return os.listdir("Videos")
    
 def receivePacketsUdp(udpSocket):
+    udpSocket.settimeout(None) # colocar em blocking mode
     while True:
         data, addr = udpSocket.recvfrom(1500) # MTU UPD
         loadedData = pickle.loads(data)
@@ -101,27 +107,50 @@ def calculateDelay(videoName):
     return CHUNK_SIZE/totalByteRate
 
 
-def sendVideo(udpSocket, videoName, clientAddr, delay):
+# função que recebe uma lista de listas de ips e devolve uma lista de tuplos compostos por nested lists com os caminhos que vão para um certo ip, e o próximo ip  
+# input: [ [10.0.26.1,10.0.0.0], [10.0.9.2,10.1.1.1], [10.0.26.1,10.2.2.2] ]
+
+
+def sendVideo(udpSocket, videoName, delay):
+
+    # a tática deverá ser ter uma thread por video a enviar, com uma lista de caminhos para onde enviar, só enviar se existir pelo menos um caminho
+    # guardar num dicionário global as listas (?), de modo a ser possível adicionar e retirar caminhos, algo tipo : videoName -> [path], é preciso um lock geral ou um por entrada
+    # avisos de cortar transmissão enviados por tcp com começo no pop
+
+    # streamsSending : videoName -> [path] (path == [ip])
 
     with open(f"mpegtsVideos/{videoName}.ts","rb") as tsFile:
-        
+        seqNumber = 0
         while True:
             startTime = time.time()
 
-            if not (videoChunk := tsFile.read(CHUNK_SIZE)):
-                break
+            if not (videoChunk := tsFile.read(CHUNK_SIZE)) or not streamsSending[videoName]:
+                streamsSending[videoName] = []
+                break 
 
-            videoPacket = videoProtocol((SERVER_IP,UDP_PORT),clientAddr,[],0,videoChunk)
-            udpSocket.sendto(pickle.dumps(videoPacket),clientAddr)
+            pathsToSend = streamsSending[videoName]
+
+            videoPacket = videoProtocol((SERVER_IP,UDP_PORT),"",pathsToSend,seqNumber,videoChunk)
+            pickledVideoPacket = pickle.dumps(videoPacket)
+            #print(len(pickledVideoPacket))
+
+            for path in pathsToSend:
+                udpSocket.sendto(pickledVideoPacket,path[1]) # path[0] é o servidor
+
+            seqNumber += 1
 
             elapsedTime = time.time() - startTime
             time.sleep(max(0,delay - elapsedTime))
 
 
-def handleClients(udpSocket,videoList):
+def handleClients(udpSocket,videoList, numPPs):
+
+    videoDelays = {} # videoName -> delay
+
     while True:
     
         clientPacket, clientAddr = clientsQueue.get(True) # bloqueia até ter um pacote
+        clientAddrs[clientAddr[0]] = clientAddr
     
         if clientPacket.getPayload() == "VL": #Video List
     
@@ -132,21 +161,42 @@ def handleClients(udpSocket,videoList):
     
             videoName = match.group(1)
     
-            if videoName in videoList:
-  
-                # calcular rota e transmitir video numa nova thread
-                # clientAddr -> [videoName] (uma thread por node a quem está a enviar)
-                # provavelmente será necessário uma lista de rotas para alem do nome do video caso o nodo à frente tenha de fazer multicast, fica pesado na rede
-                # pensar tambem em mandar o caminho ao ponto de presença e ter o ponto de presença a fazer backtrack por esse caminho
-    
-                delay = calculateDelay(videoName)
-                nodeLocation = requestProtocol("Server",f"{delay}")
-                udpSocket.sendto(pickle.dumps(nodeLocation),clientAddr)
-                threading.Thread(target=sendVideo, args=(udpSocket,videoName,clientAddr,delay,)).start()
-    
+            if videoName in videoList: # fazer a verificação de não ser pacote repetido (se o cliente já vê o vídeo ou não)
+
+                if clientAddr[0] not in clientPings: # se já foram pedidas métricas para este cliente
+                    
+                    clientPings[clientAddr[0]] = []
+                    for ip, handler in tcpHandlers.items():
+                        pingReq = controlProtocol("PING Request",((SERVER_IP,TCP_PORT)),((ip,TCP_PORT)),clientAddr)
+                        handler.sendPacket(pingReq)
+                
+                while len(clientPings[clientAddr[0]]) < numPPs:
+                    time.sleep(0.5) # poupar CPU
+
+                ppIp = calcBestPP(clientAddr[0])
+
+                if videoName not in videoDelays:
+                    delay = calculateDelay(videoName)
+                    videoDelays[videoName] = delay
+
+                nodeLocationPacket = requestProtocol("Server",f"{ppIp}")
+                udpSocket.sendto(pickle.dumps(nodeLocationPacket),clientAddr)
+
+                streamPath = [(ip, UDP_PORT) for ip in bestPathsPP[ppIp][0]]
+                streamPath += [clientAddr]
+
+                print(f"melhor pp para {clientAddr[0]} é {ppIp} com caminho {streamPath}")
+
+                if videoName not in streamsSending or not streamsSending[videoName]: # isto é sequencial, não precisa de lock
+                    streamsSending[videoName] = [streamPath]
+                    streamsSendingLocks[videoName] = threading.Lock()
+
+                    threading.Thread(target=sendVideo, args=(udpSocket,videoName,videoDelays[videoName])).start()
+                else:
+                    streamsSending[videoName].append(streamPath)
             else:
     
-                errorMessage = requestProtocol("Server","Stream doesn't exist.")
+                errorMessage = requestProtocol("Server","Stream não existe.")
                 udpSocket.sendto(pickle.dumps(errorMessage),clientAddr)
 
 
@@ -212,6 +262,12 @@ def handleNeighbours(tcpHandler,neighbourAddr):
 
                 # limite de updates deve ser o número de links na rede que não estão ligados ao servidor, os que estão ligados nem fazem update, sendo o servidor a calcular
 
+            elif packetType == "PING Response":
+
+                (ppIp, rtt, clientIp) = packet.getPayload()
+                print(packet.getPayload())
+                clientPings[clientIp].append((ppIp,rtt))
+
             else:
                 print(f"Na thread responsável por {neighbourAddr} ----> {packet.getPayload()}") # se algum nodo overlay morrer de momento, os conectados também morrem
     
@@ -240,11 +296,32 @@ def networkTest(nodeTree): # pra já apenas RTT
 def bestPathToPPs(nodeTree):
     for ip, (_,_,isPP,_) in nodeTree.items():
         if isPP:
-            shortestPath = networkx.shortest_path(networkxGraph,SERVER_IP,ip,"quality")
+            shortestPath = (networkx.shortest_path(networkxGraph,SERVER_IP,ip,"quality"), networkx.shortest_path_length(networkxGraph,SERVER_IP,ip,"quality"))
             bestPathsPP[ip] = shortestPath
 
-    for addr, path in bestPathsPP.items():
-        print(f"Caminho mais curto para {addr} -> {path}")
+    for addr, (path, weight) in bestPathsPP.items():
+        print(f"Caminho mais curto para {addr} -> {path} com peso {weight}")
+
+def calcBestPP(clientIp):
+
+#    bestPathsPP = {} # ip -> (path,rtt)
+#    clientPings = {} # client ip -> [(ppIp.rtt)]
+
+    pathsToClientRtt = {} # ppIp -> total rtt
+
+    for ppIp, (_,ppRtt) in bestPathsPP.items():
+
+        clientPingTime = 10000
+        for ip,rtt in clientPings[clientIp]:
+            if ip == ppIp:
+                clientPingTime = rtt
+                break
+
+        pathsToClientRtt[ppIp] = ppRtt + clientPingTime
+
+    sortedDict = sorted(pathsToClientRtt.items(), key=lambda item: item[1])
+    return sortedDict[0][0] # primeiro da lista, primeiro do tuplo
+    
 
 def main():
     try:
@@ -252,6 +329,8 @@ def main():
         videoList = discoverSplitVideos()
         udpSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
         udpSocket.bind((SERVER_IP, UDP_PORT))
+
+        numPPs = len([isPP for (_,_,isPP,_) in nodeTree.values() if isPP == True])
 
         threading.Thread(target=receivePacketsUdp, args=(udpSocket,)).start()
 
@@ -275,7 +354,7 @@ def main():
 
                 bestPathToPPs(nodeTree)
 
-                handleClients(udpSocket,videoList)
+                handleClients(udpSocket,videoList,numPPs)
 
                 break
             time.sleep(0.5) # poupar CPU

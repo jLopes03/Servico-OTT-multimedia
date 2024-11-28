@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 import subprocess
+import re
 
 from videoProtocol import videoProtocol
 from requestProtocol import requestProtocol
@@ -14,17 +15,30 @@ SERVER_IP = "10.0.0.10"
 CHUNK_SIZE = 940
 
 videoQueue = queue.Queue()
-controlQueue = queue.Queue()
+serverQueue = queue.Queue()
+popQueue = queue.Queue()
+
+currPP = ""
 
 def receivePackets(udpSocket):
     while True:
         data, addr = udpSocket.recvfrom(1500) # MTU UDP
         loadedData = pickle.loads(data)
-        if isinstance(loadedData,videoProtocol):
-            videoQueue.put(loadedData)
-        elif isinstance(loadedData,requestProtocol):
-            controlQueue.put(loadedData)
+        
+        if isinstance(loadedData,videoProtocol) and addr[0] == currPP:
+                #print(f"Recebi de {currPP}")
+                videoQueue.put(loadedData)
+        elif isinstance(loadedData,requestProtocol) and loadedData.getOrigin() == "Server":
+            serverQueue.put(loadedData)
+        elif  isinstance(loadedData,requestProtocol) and loadedData.getOrigin() == "Node":
+             popQueue.put(loadedData)
 
+
+def answerPings(udpSocket):
+    while True:
+        pingReq = popQueue.get(True)
+        pingResp = requestProtocol("Client","PING")
+        udpSocket.sendto(pickle.dumps(pingResp),pingReq.getSrcAddr())
 
 def viewStream():
     # lidar com fechar isto graciosamente
@@ -38,11 +52,10 @@ def viewStream():
             stderr=subprocess.DEVNULL
         )
 
-        while (videoQueue.qsize() < 200): # 200 pacotes aprox -> 1000 segmentos de video de 188 bytes
-            time.sleep(0.01)
+        while (videoQueue.qsize() < 100): # 100 pacotes aprox -> 500 segmentos de video de 188 bytes
+            time.sleep(0.1)
 
         while True:
-
             videoPacket = videoQueue.get(True) # bloqueia
             videoChunk = videoPacket.getPayload()
 
@@ -51,7 +64,7 @@ def viewStream():
 
     except KeyboardInterrupt:
 
-        print("A terminar a stream...")
+        print("\nA terminar a stream...")
 
     finally:
         if ffplayProcess.stdin:
@@ -68,14 +81,23 @@ def viewStream():
 
 
 def watchStreams(udpSocket):
+    global currPP
+
     while True:
         videoName = input("\nVer o quê?\n")
     
         receivedPP = False
         while not receivedPP:
             try:
-                if (node := controlQueue.get(True,0.10)):
+                if (node := serverQueue.get(True,10)): # timeout devido a atrasos impostos na rede sem perdas (algo a melhorar)
+                
+                    currPP = node.getPayload()
+                    print(f"Resposta do Servidor: {currPP}")
 
+                    if not re.match(r"\d+.\d.+\d+.\d+",currPP):
+                        print("IP inválido")
+                        break
+                    
                     viewStream()
 
                     receivedPP = True
@@ -96,13 +118,17 @@ def main():
     udpSocket.sendto(pickle.dumps(listRequest),(SERVER_IP,UDP_PORT))
     while not receivedVideoList:
         try:
-            if (videoList := controlQueue.get(True,0.10)): #aranjar um timeout
+            if (videoList := serverQueue.get(True,10)): # timeout devido a atrasos impostos na rede sem perdas (algo a melhorar)
                 print(videoList.getPayload())
                 receivedVideoList = True
         except queue.Empty:
             listRequest = requestProtocol("Client","VL")
             udpSocket.sendto(pickle.dumps(listRequest),(SERVER_IP,UDP_PORT))
 
+    addr = udpSocket.getsockname()
+    print(f"{addr}")
+
+    threading.Thread(target=answerPings, args=(udpSocket,)).start()
     watchStreams(udpSocket)
 
 main()

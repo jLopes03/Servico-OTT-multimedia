@@ -299,8 +299,8 @@ node n10 {
 	!
     }
     canvas c1
-    iconcoords {850.0 484.0}
-    labelcoords {850.0 516.0}
+    iconcoords {849.0 484.0}
+    labelcoords {849.0 516.0}
     interface-peer {eth0 n8}
     interface-peer {eth1 n7}
     interface-peer {eth2 n6}
@@ -391,8 +391,8 @@ node n13 {
 	!
     }
     canvas c1
-    iconcoords {654.0 635.0}
-    labelcoords {654.0 667.0}
+    iconcoords {655.0 644.0}
+    labelcoords {655.0 676.0}
     interface-peer {eth0 n14}
     interface-peer {eth1 n15}
     interface-peer {eth2 n10}
@@ -632,6 +632,7 @@ link l11 {
 }
 
 link l12 {
+    delay 10000
     nodes {n8 n3}
     bandwidth 0
 }
@@ -642,6 +643,7 @@ link l13 {
 }
 
 link l14 {
+    delay 10000
     nodes {n8 n11}
     bandwidth 0
 }
@@ -672,11 +674,13 @@ link l19 {
 }
 
 link l20 {
+    delay 500000
     nodes {n12 n15}
     bandwidth 0
 }
 
 link l21 {
+    delay 500000
     nodes {n14 n13}
     bandwidth 0
 }
@@ -727,21 +731,25 @@ link l30 {
 }
 
 link l31 {
+    delay 100000
     nodes {n11 n13}
     bandwidth 0
 }
 
 link l32 {
+    delay 10000
     nodes {n22 n3}
     bandwidth 0
 }
 
 link l33 {
+    delay 150
     nodes {n22 n8}
     bandwidth 0
 }
 
 link l34 {
+    delay 10000
     nodes {n22 n11}
     bandwidth 0
 }

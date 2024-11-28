@@ -1,9 +1,9 @@
 class videoProtocol:
 
-    def __init__(self, srcAddr, destAddr, videoPath, seqNumber,payload):
+    def __init__(self, srcAddr, destAddr, videoPaths, seqNumber,payload):
         self.srcAddr = srcAddr
         self.destAddr = destAddr
-        self.videoPath = videoPath
+        self.videoPaths = videoPaths
         self.seqNumber = seqNumber
         self.payload = payload
 
@@ -13,11 +13,14 @@ class videoProtocol:
     def getDestAddr(self):
         return self.destAddr
 
-    def getVideoPath(self):
-        return self.videoPath
+    def getVideoPaths(self):
+        return self.videoPaths
 
     def getSeqNumber(self):
         return self.seqNumber
 
     def getPayload(self):
         return self.payload
+
+    def setVideoPaths(self,videoPaths):
+        self.videoPaths = videoPaths
