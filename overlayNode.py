@@ -14,7 +14,7 @@ TCP_PORT = 9595
 UDP_PORT = 9090
 SERVER_IP = "10.0.0.10"
 
-myAddr = ""
+myIp = ""
 isPP = False
 
 tcpHandlers = {}
@@ -28,12 +28,20 @@ rttRequestsLock = threading.Lock()
 videoQueue = queue.Queue()
 controlQueue = queue.Queue() 
 serverQueue = queue.Queue() # deve apenas ser usada uma vez, mas preferi deixar
-clientsQueue = {}
+clientsResponseQueue = {}
+clientsRequestQueue = queue.Queue()
 
 clientPings = {} # se estiver aqui, já foi pinged: ip -> rtt
 pingLock = threading.Lock()
 
-# streamsSending = {} # videoName : (node de onde recebe, [para onde enviar]), usar as conexões TCP para avisar de inicio e fim de fluxo
+streamsSending = {} # videoName -> (set(vizinhos a quem enviar),de onde recebe(ip))
+streamsSendingLocks = {} # videoName -> Lock
+newClientLock = threading.Lock()
+
+sendCondition = threading.Condition()
+
+clientsWatching = {} # clientIp -> VideoName
+
 # pop usam ffmpeg para enviar para clientes?
 
 def receivePacketsUdp(udpSocket):
@@ -43,32 +51,60 @@ def receivePacketsUdp(udpSocket):
 
         if isinstance(loadedData,videoProtocol):
             videoQueue.put((loadedData,data))
-        elif isinstance(loadedData,controlProtocol):
-            controlQueue.put(loadedData) 
         elif isinstance(loadedData,requestProtocol) and loadedData.getOrigin() == "Server":
             serverQueue.put(loadedData)
-        elif isinstance(loadedData,requestProtocol) and loadedData.getOrigin() == "Client":
-            if addr[0] not in clientsQueue:
-                clientsQueue[addr[0]] = queue.Queue()
-            clientsQueue[addr[0]].put(loadedData)
+        elif isinstance(loadedData,requestProtocol) and loadedData.getOrigin() == "ClientResp":
+            if addr[0] not in clientsResponseQueue:
+                clientsResponseQueue[addr[0]] = queue.Queue()
+            clientsResponseQueue[addr[0]].put(loadedData)
+        elif isinstance(loadedData,requestProtocol) and loadedData.getOrigin() == "ClientReq":
+            clientsRequestQueue.put((loadedData,addr))
 
 
-def redirectStreams(udpSocket): # mudar o método disto, arranjar forma de saber para onde está a ser transmitido o quê, de modo a ser possível parar a transmissão por backtracking
-    while True:                 # discutir o método em que o servidor é que retira o caminho, pelo que não é cortar fluxos necessariamente mas o servidor atualiza os caminhos para onde enviar
+def redirectStreams(udpSocket): 
+    while True:                 
         videoPacket, pickledPacket = videoQueue.get(True)
-        videoPaths = videoPacket.getVideoPaths()
+        videoName = videoPacket.getVideoName()
 
-        whereToSend = set()
-        for path in videoPaths:
-            myIndex = path.index((myAddr,UDP_PORT))
-            whereToSend.add(path[myIndex + 1])
+        while videoName not in streamsSending: # fazer tempo caso o tcp não tenha chegado
+            print("Waiting")
+            pass
+        
+        if streamsSending[videoName] == "STOPPED": # saltar o pacote caso seja de uma stream que já não quero
+            continue
+        
+        with streamsSendingLocks[videoName]:
+            sendTo, _ = streamsSending[videoName]
+            copiedSendTo = sendTo.copy()
 
-        for dest in whereToSend:
+        for dest in copiedSendTo:
             #print(f"sending to {dest}")
             udpSocket.sendto(pickledPacket,dest)
 
+def handleClients():
+    while True:
+        clientPacket, clientAddr = clientsRequestQueue.get(True)
 
-def handleNeighbour(tcpHandler,neighbourAddr,udpSocket):
+        if clientPacket.getPayload() != "STOP":
+            print(f"Erro a receber do cliente, recebi {clientPacket.getPayload()}")
+
+        videoName = clientsWatching[clientAddr[0]]
+
+        with streamsSendingLocks[videoName]:
+            sendingTo, receivingFrom = streamsSending[videoName]
+            sendingTo.remove(clientAddr)
+            
+            del clientsWatching[clientAddr[0]]
+
+            if not sendingTo:
+
+                tcpHandlers[receivingFrom].sendPacket(controlProtocol("STOP Client",((myIp,TCP_PORT)),((SERVER_IP,TCP_PORT)),videoName))
+
+                streamsSending[videoName] = "STOPPED"
+            
+            print(streamsSending)
+
+def handleNeighbour(tcpHandler,neighbourIp,udpSocket):
 
     try:
         while True:
@@ -80,17 +116,17 @@ def handleNeighbour(tcpHandler,neighbourAddr,udpSocket):
 
                 connectedList = loadedPacket.getPayload()
                 
-                #print(f"Received {connectedList} from {neighbourAddr}")
+                #print(f"Received {connectedList} from {neighbourIp}")
                 
-                connectedList.append(myAddr)
+                connectedList.append(myIp)
 
                 for ip in IpsLeadingToServer:
-                    connectedPacket = controlProtocol("CONNECTED",(myAddr,TCP_PORT),(ip,TCP_PORT),connectedList)
+                    connectedPacket = controlProtocol("CONNECTED",(myIp,TCP_PORT),(ip,TCP_PORT),connectedList)
                     tcpHandlers[ip].sendPacket(connectedPacket)
 
             elif packetType == "RTT Start":
                 
-                rttFinish = controlProtocol("RTT Finish",(myAddr,TCP_PORT),(neighbourAddr,TCP_PORT))
+                rttFinish = controlProtocol("RTT Finish",(myIp,TCP_PORT),(neighbourIp,TCP_PORT))
                 tcpHandler.sendPacket(rttFinish)
 
                 with rttRequestsLock: 
@@ -100,21 +136,21 @@ def handleNeighbour(tcpHandler,neighbourAddr,udpSocket):
                     for addr, handler in tcpHandlers.items():
                         if addr not in IpsLeadingToServer:
 
-                            startRTT = controlProtocol("RTT Start",(myAddr,TCP_PORT),(addr,TCP_PORT))
-                            metrics[(myAddr,addr)] = time.time()
+                            startRTT = controlProtocol("RTT Start",(myIp,TCP_PORT),(addr,TCP_PORT))
+                            metrics[(myIp,addr)] = time.time()
                             handler.sendPacket(startRTT)
 
             elif packetType == "RTT Finish":
 
-                prevTime =  metrics[(myAddr,neighbourAddr)]
+                prevTime =  metrics[(myIp,neighbourIp)]
                 with rttRequestsLock: # impossibilita duas threads enviarem valores atualizados de um lado e desatualizados de outro, assim uma envia um atualizado e outra desatualizado e a seguinte já envia os dois atualizados
-                    metrics[(myAddr,neighbourAddr)] = time.time() - prevTime
-                    #print(f"RTT {myAddr} ---> {neighbourAddr} : {metrics[(myAddr,neighbourAddr)]}")
+                    metrics[(myIp,neighbourIp)] = time.time() - prevTime
+                    #print(f"RTT {myIp} ---> {neighbourIp} : {metrics[(myIp,neighbourIp)]}")
                 
                 # Enviar RTT Update para os de trás
                 for addr in IpsLeadingToServer:
 
-                    updateRTT = controlProtocol("RTT Update",(myAddr,TCP_PORT),(neighbourAddr,TCP_PORT),metrics)
+                    updateRTT = controlProtocol("RTT Update",(myIp,TCP_PORT),(neighbourIp,TCP_PORT),metrics)
                      
                     for ip in IpsLeadingToServer:
                         tcpHandlers[ip].sendPacket(updateRTT)
@@ -127,14 +163,14 @@ def handleNeighbour(tcpHandler,neighbourAddr,udpSocket):
                 rttDict = loadedPacket.getPayload()
                 metrics.update(rttDict)
 
-                updateRTT = controlProtocol("RTT Update",(myAddr,TCP_PORT),(neighbourAddr,TCP_PORT),metrics)
+                updateRTT = controlProtocol("RTT Update",(myIp,TCP_PORT),(neighbourIp,TCP_PORT),metrics)
                      
                 for ip in IpsLeadingToServer:
                     tcpHandlers[ip].sendPacket(updateRTT)
 
             elif packetType == "PING Request":
 
-                if isPP: # ainda possiveis pings repetidos
+                if isPP:
 
                     clientAddr = loadedPacket.getPayload()
 
@@ -144,19 +180,19 @@ def handleNeighbour(tcpHandler,neighbourAddr,udpSocket):
 
                         else:
 
-                            pingReq = requestProtocol("Node","PING",(myAddr,UDP_PORT))
+                            pingReq = requestProtocol("Node","PING",(myIp,UDP_PORT))
                             startTime = time.time()
                             udpSocket.sendto(pickle.dumps(pingReq),clientAddr)
 
-                            while clientAddr[0] not in clientsQueue:
+                            while clientAddr[0] not in clientsResponseQueue:
                                 pass
 
-                            clientsQueue[clientAddr[0]].get(True)
+                            clientsResponseQueue[clientAddr[0]].get(True)
                             rtt = time.time() - startTime
 
                             clientPings[clientAddr[0]] = rtt
 
-                        returnRTT = controlProtocol("PING Response",((myAddr,TCP_PORT)),((SERVER_IP,TCP_PORT)),(myAddr,rtt,clientAddr[0]))
+                        returnRTT = controlProtocol("PING Response",((myIp,TCP_PORT)),((SERVER_IP,TCP_PORT)),(myIp,rtt,clientAddr[0]))
                             
                         for ip in IpsLeadingToServer:
                             tcpHandlers[ip].sendPacket(returnRTT)
@@ -171,22 +207,60 @@ def handleNeighbour(tcpHandler,neighbourAddr,udpSocket):
                 for ip in IpsLeadingToServer:
                     tcpHandlers[ip].sendPacket(loadedPacket)
 
+            elif packetType == "NEW Client":
+                
+                streamPath, videoName = loadedPacket.getPayload()
+                whereToSend = streamPath[streamPath.index((myIp,UDP_PORT)) + 1] # (ip, porta)
+
+                newClientLock.acquire()
+                if videoName not in streamsSending or streamsSending[videoName] == "STOPPED":
+                    streamsSending[videoName] = ({whereToSend},neighbourIp)
+                    streamsSendingLocks[videoName] = threading.Lock()
+
+                if isPP:
+                    clientsWatching[whereToSend[0]] = videoName
+
+                streamsSendingLocks[videoName].acquire()
+                newClientLock.release()
+                streamsSending[videoName][0].add(whereToSend)
+
+                if not isPP:
+                    tcpHandlers[whereToSend[0]].sendPacket(loadedPacket) # enviar o próximo no caminho de qualquer forma, ele pode precisar de bifurcar
+
+                print(streamsSending)
+                streamsSendingLocks[videoName].release()
+
+            elif packetType == "STOP Client":
+
+                videoName = loadedPacket.getPayload()
+
+                with streamsSendingLocks[videoName]:
+                    sendingTo, receivingFrom = streamsSending[videoName]
+                    sendingTo.remove((neighbourIp,UDP_PORT)) # se este recebe um STOP é porque está a enviar vídeo para quem enviou o pedido de STOP
+
+                    if not sendingTo:
+                        
+                        tcpHandlers[receivingFrom].sendPacket(loadedPacket)
+
+                        streamsSending[videoName] = "STOPPED"
+
+                    print(streamsSending)
 
             else:
-                print(f"Na thread responsável por {neighbourAddr} ----> {loadedPacket.getPayload()}") # se algum nodo overlay morrer de momento, os conectados também morrem
+                print(f"Na thread responsável por {neighbourIp} ----> {loadedPacket.getPayload()}")
     finally:
         tcpHandler.close()
 
 def main():
-    global myAddr, isPP
+    global myIp, isPP
 
-    myAddr = sys.argv[1] # mudei isto de input()
+    myIp = sys.argv[1]
 
     udpSocket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    udpSocket.bind((myAddr,UDP_PORT))
+    udpSocket.bind((myIp,UDP_PORT))
 
     tcpServerSocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    tcpServerSocket.bind((myAddr,TCP_PORT))
+    tcpServerSocket.bind((myIp,TCP_PORT))
 
     threading.Thread(target=receivePacketsUdp,args=(udpSocket,)).start()
 
@@ -199,7 +273,7 @@ def main():
                 receivedNeighbours = True
 
                 for _ in range(10): # melhorar isto
-                    ackPacket = requestProtocol("Node","ACK",(myAddr,UDP_PORT))
+                    ackPacket = requestProtocol("Node","ACK",(myIp,UDP_PORT))
                     udpSocket.sendto(pickle.dumps(ackPacket),(SERVER_IP,UDP_PORT))
 
         except queue.Empty:
@@ -223,23 +297,20 @@ def main():
             s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
             s.connect((neighbour,TCP_PORT))
             handler = TCPHandler(s,threading.Lock())
-            handler.sendPacket(f"{myAddr}")
+            handler.sendPacket(f"{myIp}")
 
             tcpHandlers[neighbour] = handler
     
-    for addr, handler in tcpHandlers.items():
-        threading.Thread(target=handleNeighbour,args=(handler,addr,udpSocket)).start()
+    for ip, handler in tcpHandlers.items():
+        threading.Thread(target=handleNeighbour,args=(handler,ip,udpSocket)).start()
 
     if isPP: #na fronteira da rede, os PP iniciam uma cadeia de mensagens até ao servidor para ele saber que a rede está pronta
         for ip in IpsLeadingToServer:
-            connectedPacket = controlProtocol("CONNECTED",(myAddr,TCP_PORT),(ip,TCP_PORT),[myAddr])
+            connectedPacket = controlProtocol("CONNECTED",(myIp,TCP_PORT),(ip,TCP_PORT),[myIp])
             tcpHandlers[ip].sendPacket(connectedPacket)
 
-    threading.Thread(target=redirectStreams,args=(udpSocket,)).start()
+        threading.Thread(target=handleClients).start()
 
-    #if input() == "s":
-    #    for addr in tcpHandlers.keys():
-    #        p = controlProtocol("TEST","","",f"Boas do {myAddr}!")
-    #        tcpHandlers[addr].sendPacket(p)
+    threading.Thread(target=redirectStreams,args=(udpSocket,)).start()
 
 main()

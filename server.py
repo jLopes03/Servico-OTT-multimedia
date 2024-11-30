@@ -35,7 +35,9 @@ clientPings = {} # client ip -> [(ppIp,rtt)]
 
 clientAddrs = {} # clientIP -> (clientIP,Port)
 
-streamsSending = {} # videoName -> [path (com o ip do cliente)]
+videoDelays = {} # videoName -> delay
+
+streamsSending = {} # videoName -> set(vizinhos para onde enviar)
 streamsSendingLocks = {} # videoName -> Lock
 
 statusUpdates = 0
@@ -77,6 +79,10 @@ def convertToMpegts(videoName):
     ffmpeg.input(f"Videos/{videoName}").output(f"mpegtsVideos/{videoName}.ts",f="mpegts",vcodec="libx264",acodec="aac",preset="superfast",loglevel="quiet").run()
     # ffmpeg -i VideoA.mp4 -f mpegts -c:v libx264 -preset superfast -c:a aac output.ts
 
+    #tambem vamos calcular o delay:
+    delay = calculateDelay(videoName)
+    videoDelays[videoName] = delay
+
 def discoverSplitVideos():
     os.makedirs("mpegtsVideos")
 
@@ -106,36 +112,33 @@ def calculateDelay(videoName):
 
     return CHUNK_SIZE/totalByteRate
 
-
-# função que recebe uma lista de listas de ips e devolve uma lista de tuplos compostos por nested lists com os caminhos que vão para um certo ip, e o próximo ip  
-# input: [ [10.0.26.1,10.0.0.0], [10.0.9.2,10.1.1.1], [10.0.26.1,10.2.2.2] ]
-
+# servidor vê caminho, avisa o vizinho para quem vai enviar por tcp e guarda num dicionário para onde está a enviar o video: Video -> set(vizinhos a quem enviar)
+# o servidor ao avisar o vizinho tambem avisa para quem ele tem que enviar, sendo assim o caminho da transmissão é enviado por tcp
+# nodes têm de filtrar pelo nome do video de modo a saber para onde enviar cada pacotes, talvez dicionário de queues para permitir multithreading, ou apenas uma queue com um if
+# clientes avisam que querem sair ao pop, o pop remove o ip do cliente da lista e informa quem está a enviar para ele que já não precisa caso não tenha mais clientes
+# para isto é necessário os nodes guardarem tambem de quem estão a receber o quê, portanto o dicionário lá em cima será na verdade: Video -> (set(vizinhos a quem enviar), quem está a enviar para ele)
+# mudamos de lista para set, assim não tem repetidos e garantimos o menor número de fluxos
 
 def sendVideo(udpSocket, videoName, delay):
 
-    # a tática deverá ser ter uma thread por video a enviar, com uma lista de caminhos para onde enviar, só enviar se existir pelo menos um caminho
-    # guardar num dicionário global as listas (?), de modo a ser possível adicionar e retirar caminhos, algo tipo : videoName -> [path], é preciso um lock geral ou um por entrada
-    # avisos de cortar transmissão enviados por tcp com começo no pop
-
-    # streamsSending : videoName -> [path] (path == [ip])
+    # streamsSending : videoName -> set(Vizinhos)
 
     with open(f"mpegtsVideos/{videoName}.ts","rb") as tsFile:
         seqNumber = 0
         while True:
             startTime = time.time()
 
-            if not (videoChunk := tsFile.read(CHUNK_SIZE)) or not streamsSending[videoName]:
-                streamsSending[videoName] = []
+            if not (videoChunk := tsFile.read(CHUNK_SIZE)) or videoName not in streamsSending:
                 break 
 
-            pathsToSend = streamsSending[videoName]
+            neighboursToSend = streamsSending[videoName]
 
-            videoPacket = videoProtocol((SERVER_IP,UDP_PORT),"",pathsToSend,seqNumber,videoChunk)
+            videoPacket = videoProtocol((SERVER_IP,UDP_PORT),videoName,seqNumber,videoChunk)
             pickledVideoPacket = pickle.dumps(videoPacket)
             #print(len(pickledVideoPacket))
 
-            for path in pathsToSend:
-                udpSocket.sendto(pickledVideoPacket,path[1]) # path[0] é o servidor
+            for neighbour in neighboursToSend:
+                udpSocket.sendto(pickledVideoPacket,neighbour)
 
             seqNumber += 1
 
@@ -144,8 +147,6 @@ def sendVideo(udpSocket, videoName, delay):
 
 
 def handleClients(udpSocket,videoList, numPPs):
-
-    videoDelays = {} # videoName -> delay
 
     while True:
     
@@ -175,10 +176,6 @@ def handleClients(udpSocket,videoList, numPPs):
 
                 ppIp = calcBestPP(clientAddr[0])
 
-                if videoName not in videoDelays:
-                    delay = calculateDelay(videoName)
-                    videoDelays[videoName] = delay
-
                 nodeLocationPacket = requestProtocol("Server",f"{ppIp}")
                 udpSocket.sendto(pickle.dumps(nodeLocationPacket),clientAddr)
 
@@ -187,13 +184,20 @@ def handleClients(udpSocket,videoList, numPPs):
 
                 print(f"melhor pp para {clientAddr[0]} é {ppIp} com caminho {streamPath}")
 
-                if videoName not in streamsSending or not streamsSending[videoName]: # isto é sequencial, não precisa de lock
-                    streamsSending[videoName] = [streamPath]
-                    streamsSendingLocks[videoName] = threading.Lock()
+                #informar vizinho por TCP
+                neighbourToSend = streamPath[1] # (ip,porta) # streamPath[0] é o servidor
+                tcpHandlers[neighbourToSend[0]].sendPacket(controlProtocol("NEW Client",((SERVER_IP,TCP_PORT)),neighbourToSend,(streamPath,videoName)))
+
+                if videoName not in streamsSending: # isto é sequencial, não precisa de lock
+                    streamsSending[videoName] = {neighbourToSend}
+                    
+                    if videoName not in streamsSendingLocks:
+                        streamsSendingLocks[videoName] = threading.Lock()
 
                     threading.Thread(target=sendVideo, args=(udpSocket,videoName,videoDelays[videoName])).start()
                 else:
-                    streamsSending[videoName].append(streamPath)
+                    with streamsSendingLocks[videoName]:
+                        streamsSending[videoName].add(neighbourToSend)
             else:
     
                 errorMessage = requestProtocol("Server","Stream não existe.")
@@ -267,6 +271,18 @@ def handleNeighbours(tcpHandler,neighbourAddr):
                 (ppIp, rtt, clientIp) = packet.getPayload()
                 print(packet.getPayload())
                 clientPings[clientIp].append((ppIp,rtt))
+
+            elif packetType == "STOP Client":
+                
+                videoName = packet.getPayload()
+
+                with streamsSendingLocks[videoName]:
+                    
+                    sendingTo = streamsSending[videoName]
+                    sendingTo.remove((neighbourAddr,UDP_PORT)) # se este recebe um STOP é porque está a enviar vídeo para quem enviou o pedido de STOP
+
+                    if not sendingTo:
+                        del streamsSending[videoName]
 
             else:
                 print(f"Na thread responsável por {neighbourAddr} ----> {packet.getPayload()}") # se algum nodo overlay morrer de momento, os conectados também morrem

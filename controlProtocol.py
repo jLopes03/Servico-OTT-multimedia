@@ -1,6 +1,6 @@
 class controlProtocol:
     
-    def __init__(self, type,srcAddr, destAddr, payload = ""):
+    def __init__(self, type, srcAddr, destAddr, payload = ""):
         self.type = type
         self.srcAddr = srcAddr
         self.destAddr = destAddr
