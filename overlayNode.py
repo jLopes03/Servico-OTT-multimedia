@@ -38,15 +38,11 @@ streamsSending = {} # videoName -> (set(vizinhos a quem enviar),de onde recebe(i
 streamsSendingLocks = {} # videoName -> Lock
 newClientLock = threading.Lock()
 
-sendCondition = threading.Condition()
-
 clientsWatching = {} # clientIp -> VideoName
-
-# pop usam ffmpeg para enviar para clientes?
 
 def receivePacketsUdp(udpSocket):
     while True:
-        data, addr = udpSocket.recvfrom(1500) # MTU UPD
+        data, addr = udpSocket.recvfrom(1500)
         loadedData = pickle.loads(data)
 
         if isinstance(loadedData,videoProtocol):
@@ -67,10 +63,10 @@ def redirectStreams(udpSocket):
         videoName = videoPacket.getVideoName()
 
         while videoName not in streamsSending: # fazer tempo caso o tcp não tenha chegado
-            print("Waiting")
+            #print("Waiting")
             pass
         
-        if streamsSending[videoName] == "STOPPED": # saltar o pacote caso seja de uma stream que já não quero
+        if streamsSending[videoName] == "STOPPED": # saltar o pacote
             continue
         
         with streamsSendingLocks[videoName]:
@@ -158,7 +154,6 @@ def handleNeighbour(tcpHandler,neighbourIp,udpSocket):
 
             elif packetType == "RTT Update":
                 # Reencaminhar RTT Update para trás
-                # Devem haver repetidos mas a medição só é feita uma vez por link
 
                 rttDict = loadedPacket.getPayload()
                 metrics.update(rttDict)
@@ -175,7 +170,7 @@ def handleNeighbour(tcpHandler,neighbourIp,udpSocket):
                     clientAddr = loadedPacket.getPayload()
 
                     with pingLock:
-                        if clientAddr[0] in clientPings: # verificar se isto funciona verdadeiramente
+                        if clientAddr[0] in clientPings:
                             rtt = clientPings[clientAddr[0]]
 
                         else:

@@ -43,7 +43,6 @@ def answerPings(udpSocket):
 def viewStream(udpSocket):
     global currPP, viewingStream
 
-    # lidar com fechar isto graciosamente
     try:
 
         ffplayProcess = subprocess.Popen(
@@ -114,7 +113,6 @@ def watchStreams(udpSocket):
                 udpSocket.sendto(pickle.dumps(watchRequest),(SERVER_IP,UDP_PORT)) 
 
 def main():
-    #clientIp = input("My IP?\n")
     udpSocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
     threading.Thread(target=receivePackets, args=(udpSocket,)).start()

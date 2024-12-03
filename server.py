@@ -92,9 +92,8 @@ def discoverSplitVideos():
     return os.listdir("Videos")
    
 def receivePacketsUdp(udpSocket):
-    udpSocket.settimeout(None) # colocar em blocking mode
     while True:
-        data, addr = udpSocket.recvfrom(1500) # MTU UPD
+        data, addr = udpSocket.recvfrom(1500)
         loadedData = pickle.loads(data)
         
         if loadedData.getOrigin() == "Client":
@@ -111,13 +110,6 @@ def calculateDelay(videoName):
     totalByteRate = totalBitrate/8
 
     return CHUNK_SIZE/totalByteRate
-
-# servidor vê caminho, avisa o vizinho para quem vai enviar por tcp e guarda num dicionário para onde está a enviar o video: Video -> set(vizinhos a quem enviar)
-# o servidor ao avisar o vizinho tambem avisa para quem ele tem que enviar, sendo assim o caminho da transmissão é enviado por tcp
-# nodes têm de filtrar pelo nome do video de modo a saber para onde enviar cada pacotes, talvez dicionário de queues para permitir multithreading, ou apenas uma queue com um if
-# clientes avisam que querem sair ao pop, o pop remove o ip do cliente da lista e informa quem está a enviar para ele que já não precisa caso não tenha mais clientes
-# para isto é necessário os nodes guardarem tambem de quem estão a receber o quê, portanto o dicionário lá em cima será na verdade: Video -> (set(vizinhos a quem enviar), quem está a enviar para ele)
-# mudamos de lista para set, assim não tem repetidos e garantimos o menor número de fluxos
 
 def sendVideo(udpSocket, videoName, delay):
 
@@ -162,7 +154,7 @@ def handleClients(udpSocket,videoList, numPPs):
     
             videoName = match.group(1)
     
-            if videoName in videoList: # fazer a verificação de não ser pacote repetido (se o cliente já vê o vídeo ou não)
+            if videoName in videoList:
 
                 if clientAddr[0] not in clientPings: # se já foram pedidas métricas para este cliente
                     
@@ -285,13 +277,13 @@ def handleNeighbours(tcpHandler,neighbourAddr):
                         del streamsSending[videoName]
 
             else:
-                print(f"Na thread responsável por {neighbourAddr} ----> {packet.getPayload()}") # se algum nodo overlay morrer de momento, os conectados também morrem
+                print(f"Na thread responsável por {neighbourAddr} ----> {packet.getPayload()}")
     
     finally:
         tcpHandler.close()
 
 
-def networkTest(nodeTree): # pra já apenas RTT
+def networkTest(nodeTree):
 
     for addr, handler in tcpHandlers.items():
         startRTT = controlProtocol("RTT Start",(SERVER_IP,TCP_PORT),(addr,TCP_PORT))
