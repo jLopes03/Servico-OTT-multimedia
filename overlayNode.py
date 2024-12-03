@@ -66,10 +66,11 @@ def redirectStreams(udpSocket):
             #print("Waiting")
             pass
         
-        if streamsSending[videoName] == "STOPPED": # saltar o pacote
-            continue
-        
         with streamsSendingLocks[videoName]:
+            
+            if streamsSending[videoName] == "STOPPED": # saltar o pacote
+                continue
+            
             sendTo, _ = streamsSending[videoName]
             copiedSendTo = sendTo.copy()
 
